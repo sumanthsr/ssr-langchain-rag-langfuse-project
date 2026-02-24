@@ -1,0 +1,51 @@
+# .dockerignore
+# Exclude everything that doesn't belong in the Docker image
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Tests (not needed in prod image)
+tests/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Kubernetes / DevOps (not needed in image)
+k8s/
+*.yaml
+*.yml
+!docker-compose.yml
+
+# Development tooling
+.git/
+.gitignore
+.github/
+.mypy_cache/
+.ruff_cache/
+Makefile
+*.md
+*.rst
+docs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store

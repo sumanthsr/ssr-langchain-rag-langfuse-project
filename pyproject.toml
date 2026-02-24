@@ -1,0 +1,119 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rag-langchain"
+version = "1.0.0"
+description = "Production-ready RAG pipeline with LangChain, Qdrant, Langfuse — 100% open-source"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    # ── API framework ──────────────────────────────────────────────────────
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",       # file upload support
+
+    # ── LangChain core ─────────────────────────────────────────────────────
+    "langchain>=0.2.0",
+    "langchain-community>=0.2.0",
+    "langchain-huggingface>=0.0.3",
+    "langchain-core>=0.2.0",
+
+    # ── PDF loading ────────────────────────────────────────────────────────
+    "pypdf>=4.2.0",
+    "pdfminer.six>=20221105",
+    "pymupdf>=1.24.0",               # fitz — fast, handles complex PDFs
+    "unstructured>=0.14.0",          # handles tables, headers, scanned docs
+
+    # ── Embeddings (open-source, local) ────────────────────────────────────
+    "sentence-transformers>=3.0.0",  # BAAI/bge-small-en-v1.5
+    "torch>=2.3.0",                  # CPU-only; set index_url for CUDA builds
+
+    # ── Vector store ───────────────────────────────────────────────────────
+    "qdrant-client>=1.9.0",
+    "langchain-qdrant>=0.1.0",
+
+    # ── Hybrid retrieval ───────────────────────────────────────────────────
+    "rank-bm25>=0.2.2",              # BM25 keyword retrieval
+
+    # ── Reranking ─────────────────────────────────────────────────────────
+    "FlagEmbedding>=1.2.0",          # BAAI/bge-reranker-base
+
+    # ── LLM (local via Ollama HTTP) ────────────────────────────────────────
+    "ollama>=0.2.0",                 # Ollama Python client
+
+    # ── Observability — Langfuse (open-source) ─────────────────────────────
+    "langfuse>=2.30.0",
+
+    # ── Configuration & validation ─────────────────────────────────────────
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+
+    # ── Async HTTP / utilities ─────────────────────────────────────────────
+    "httpx>=0.27.0",
+    "aiofiles>=23.2.1",
+    "tenacity>=8.3.0",               # retry logic for LLM + vector DB calls
+
+    # ── Caching ────────────────────────────────────────────────────────────
+    "redis>=5.0.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "pytest-xdist>=3.5.0",          # parallel test execution
+    "httpx>=0.27.0",                 # TestClient
+    "ruff>=0.4.0",                   # linting + formatting
+    "mypy>=1.10.0",                  # type checking
+    "bandit>=1.7.8",                 # security scanning
+    "testcontainers[qdrant,redis]>=4.5.0",
+    "respx>=0.21.0",                 # mock httpx (for Ollama)
+    "locust>=2.29.0",                # load testing
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# ── Ruff (linter + formatter) ──────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+select = ["E", "W", "F", "I", "B", "C4", "UP", "S", "T20"]
+ignore = ["S101", "B008"]           # allow assert in tests, FastAPI Depends
+
+[tool.ruff.per-file-ignores]
+"tests/*" = ["S", "T20"]
+
+# ── Mypy ──────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+# ── Pytest ────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80 -x"
+markers = [
+    "unit: fast unit tests with mocked dependencies",
+    "integration: tests requiring real services (Docker)",
+    "slow: tests that take more than 10 seconds",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*", "app/main.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
