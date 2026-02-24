@@ -1,0 +1,396 @@
+# ═══════════════════════════════════════════════════════════════════
+# .github/workflows/cicd.yml
+# ═══════════════════════════════════════════════════════════════════
+# 8-stage pipeline:
+#   1. Code Quality    → every push
+#   2. Unit Tests      → every push
+#   3. Build Image     → main branch only
+#   4. Security Scan   → main branch only
+#   5. Deploy QA       → main branch, auto
+#   6. Integration Tests → post QA deploy
+#   7. Manual Approval → production gate
+#   8. Deploy Prod     → blue/green, after approval
+#
+# Rollback: GitHub Actions "rollback" job can be triggered manually
+# via workflow_dispatch to revert the production deployment.
+# ═══════════════════════════════════════════════════════════════════
+
+name: CI/CD — RAG LangChain
+
+on:
+  push:
+    branches: [main, develop, "feature/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform"
+        required: true
+        type: choice
+        options: [deploy-prod, rollback-prod, rollback-qa]
+      revision:
+        description: "Revision number to roll back to (rollback only)"
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/rag-langchain/api
+  PYTHON_VERSION: "3.11"
+
+# Cancel in-progress runs on same branch to save CI minutes
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ══════════════════════════════════════════════════════════════
+  # JOB 1 — Code Quality (every push, ~60s)
+  # ══════════════════════════════════════════════════════════════
+  quality:
+    name: "1 · Code Quality"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install ruff mypy bandit
+
+      - name: Lint & Format check (ruff)
+        run: ruff check . && ruff format --check .
+
+      - name: Type checking (mypy)
+        run: mypy app/ --ignore-missing-imports
+
+      - name: Security scan (bandit)
+        run: bandit -r app/ -ll -x tests/
+
+
+  # ══════════════════════════════════════════════════════════════
+  # JOB 2 — Unit Tests (every push, ~2 min)
+  # ══════════════════════════════════════════════════════════════
+  unit-tests:
+    name: "2 · Unit Tests"
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/ \
+            -m unit \
+            --cov=app \
+            --cov-report=xml \
+            --cov-fail-under=80 \
+            -n auto \
+            -v
+        env:
+          LANGFUSE_ENABLED: "false"
+          CACHE_ENABLED: "false"
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+          fail_ci_if_error: false
+
+
+  # ══════════════════════════════════════════════════════════════
+  # JOB 3 — Build Docker Image (main branch only)
+  # ══════════════════════════════════════════════════════════════
+  build:
+    name: "3 · Build & Push Image"
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+      short-sha: ${{ steps.sha.outputs.short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=moby/buildkit:latest
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build and push (with layer cache)
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            GIT_SHA=${{ github.sha }}
+
+
+  # ══════════════════════════════════════════════════════════════
+  # JOB 4 — Security Scan (after build)
+  # ══════════════════════════════════════════════════════════════
+  security-scan:
+    name: "4 · Security Scan (Trivy)"
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ needs.build.outputs.short-sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 1         # fail pipeline on CRITICAL/HIGH CVEs
+
+      - name: Upload Trivy SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()           # upload even if scan finds issues
+        with:
+          sarif_file: trivy-results.sarif
+
+
+  # ══════════════════════════════════════════════════════════════
+  # JOB 5 — Deploy to QA (auto, after security scan passes)
+  # ══════════════════════════════════════════════════════════════
+  deploy-qa:
+    name: "5 · Deploy → QA"
+    runs-on: ubuntu-latest
+    needs: [build, security-scan]
+    environment:
+      name: qa
+      url: https://api-qa.yourdomain.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_QA }}
+
+      - name: Apply ConfigMaps & Secrets
+        run: |
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/serviceaccount.yaml
+
+      - name: Deploy new image to QA
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ needs.build.outputs.short-sha }}"
+          kubectl set image deployment/rag-api api="$IMAGE" -n rag-qa
+          kubectl annotate deployment/rag-api kubernetes.io/change-cause="CI deploy sha-${{ needs.build.outputs.short-sha }}" -n rag-qa --overwrite
+
+      - name: Wait for rollout to complete
+        run: |
+          kubectl rollout status deployment/rag-api -n rag-qa --timeout=300s
+
+      - name: Smoke test QA
+        run: |
+          sleep 10
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" https://api-qa.yourdomain.com/health)
+          READY=$(curl -sf -o /dev/null -w "%{http_code}" https://api-qa.yourdomain.com/ready)
+          if [ "$STATUS" != "200" ] || [ "$READY" != "200" ]; then
+            echo "Smoke tests FAILED — rolling back QA"
+            kubectl rollout undo deployment/rag-api -n rag-qa
+            exit 1
+          fi
+          echo "Smoke tests PASSED"
+
+
+  # ══════════════════════════════════════════════════════════════
+  # JOB 6 — Integration Tests (runs against live QA env)
+  # ══════════════════════════════════════════════════════════════
+  integration-tests:
+    name: "6 · Integration Tests (QA)"
+    runs-on: ubuntu-latest
+    needs: deploy-qa
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run integration tests against QA
+        run: |
+          pytest tests/integration/ -v --timeout=120
+        env:
+          RAG_API_URL: https://api-qa.yourdomain.com
+          ENVIRONMENT: qa
+
+
+  # ══════════════════════════════════════════════════════════════
+  # JOB 7 — Manual Approval Gate (humans must approve)
+  # ══════════════════════════════════════════════════════════════
+  # This job is gated by GitHub's "environment protection rules".
+  # Configure in: Settings → Environments → prod → Required reviewers
+  # Approval creates an immutable audit trail in GitHub.
+  approve-prod:
+    name: "7 · Await Production Approval"
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    environment:
+      name: prod        # ← GitHub environment with required reviewer configured
+    steps:
+      - name: Approval checkpoint
+        run: echo "Production deployment approved by ${{ github.actor }}"
+
+
+  # ══════════════════════════════════════════════════════════════
+  # JOB 8 — Deploy to Production (blue/green, after approval)
+  # ══════════════════════════════════════════════════════════════
+  deploy-prod:
+    name: "8 · Deploy → Production (Blue/Green)"
+    runs-on: ubuntu-latest
+    needs: approve-prod
+    environment:
+      name: prod
+      url: https://api.yourdomain.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PROD }}
+
+      - name: Apply ConfigMaps & Secrets
+        run: |
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/serviceaccount.yaml
+          kubectl apply -f k8s/pdb.yaml
+          kubectl apply -f k8s/hpa.yaml
+
+      - name: Record rollback point (current revision)
+        id: rollback-ref
+        run: |
+          REVISION=$(kubectl rollout history deployment/rag-api -n rag-prod | tail -2 | head -1 | awk '{print $1}')
+          echo "revision=$REVISION" >> $GITHUB_OUTPUT
+          echo "Rollback point: revision $REVISION"
+
+      - name: Deploy new image to Production
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ needs.build.outputs.short-sha }}"
+          kubectl set image deployment/rag-api api="$IMAGE" -n rag-prod
+          kubectl annotate deployment/rag-api \
+            kubernetes.io/change-cause="Prod deploy sha-${{ needs.build.outputs.short-sha }} by ${{ github.actor }}" \
+            -n rag-prod --overwrite
+
+      - name: Wait for rolling update to complete (zero-downtime)
+        run: |
+          kubectl rollout status deployment/rag-api -n rag-prod --timeout=600s
+
+      - name: Post-deploy smoke tests
+        id: smoke
+        run: |
+          sleep 15
+          for i in 1 2 3; do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" https://api.yourdomain.com/health)
+            READY=$(curl -sf -o /dev/null -w "%{http_code}" https://api.yourdomain.com/ready)
+            if [ "$STATUS" = "200" ] && [ "$READY" = "200" ]; then
+              echo "Smoke test $i PASSED"
+            else
+              echo "Smoke test $i FAILED (health=$STATUS, ready=$READY)"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: AUTO-ROLLBACK on smoke test failure
+        if: failure() && steps.smoke.outcome == 'failure'
+        run: |
+          echo "Smoke tests failed — rolling back to revision ${{ steps.rollback-ref.outputs.revision }}"
+          kubectl rollout undo deployment/rag-api -n rag-prod \
+            --to-revision=${{ steps.rollback-ref.outputs.revision }}
+          kubectl rollout status deployment/rag-api -n rag-prod --timeout=300s
+          echo "ROLLBACK COMPLETE"
+          exit 1
+
+      - name: Tag image as stable
+        if: success()
+        run: |
+          # Re-tag the successfully deployed SHA image as the semver release
+          # (requires docker/login — simplified here for brevity)
+          echo "Deployment successful. Image sha-${{ needs.build.outputs.short-sha }} is stable in prod."
+
+
+  # ══════════════════════════════════════════════════════════════
+  # MANUAL ROLLBACK JOB (workflow_dispatch only)
+  # ══════════════════════════════════════════════════════════════
+  rollback:
+    name: "Manual Rollback"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && contains(github.event.inputs.action, 'rollback')
+    environment:
+      name: ${{ contains(github.event.inputs.action, 'prod') && 'prod' || 'qa' }}
+    steps:
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ contains(github.event.inputs.action, 'prod') && secrets.KUBE_CONFIG_PROD || secrets.KUBE_CONFIG_QA }}
+
+      - name: Rollback deployment
+        run: |
+          NS=${{ contains(github.event.inputs.action, 'prod') && 'rag-prod' || 'rag-qa' }}
+          REVISION="${{ github.event.inputs.revision }}"
+
+          if [ -n "$REVISION" ]; then
+            echo "Rolling back to revision $REVISION in $NS"
+            kubectl rollout undo deployment/rag-api -n "$NS" --to-revision="$REVISION"
+          else
+            echo "Rolling back to previous revision in $NS"
+            kubectl rollout undo deployment/rag-api -n "$NS"
+          fi
+
+          kubectl rollout status deployment/rag-api -n "$NS" --timeout=300s
+          echo "Rollback complete in $NS"

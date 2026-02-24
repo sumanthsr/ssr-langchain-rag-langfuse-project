@@ -1,0 +1,196 @@
+# ═══════════════════════════════════════════════════════════════════
+# k8s/deployment.yaml — RAG API Deployment (Production)
+# ═══════════════════════════════════════════════════════════════════
+#
+# Deployment strategy: RollingUpdate
+#   maxSurge: 1        — max 1 extra pod above desired count during update
+#   maxUnavailable: 0  — zero downtime; old pods stay until new ones are Ready
+#
+# Rollback:
+#   kubectl rollout undo deployment/rag-api -n rag-prod
+#   kubectl rollout undo deployment/rag-api -n rag-prod --to-revision=2
+#   kubectl rollout history deployment/rag-api -n rag-prod
+#
+# Image update (CI/CD sets the SHA tag):
+#   kubectl set image deployment/rag-api api=registry/rag-langchain/api:sha-abc123 -n rag-prod
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-api
+  namespace: rag-prod
+  labels:
+    app: rag-langchain
+    component: api
+    environment: prod
+  annotations:
+    # Tracks last applied deploy — used by 'kubectl rollout history'
+    kubernetes.io/change-cause: "Initial deployment v1.0.0"
+spec:
+  # Baseline replicas — HPA (hpa.yaml) will scale this up/down
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: rag-langchain
+      component: api
+
+  # ── Rolling Update Strategy ─────────────────────────────────────
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # bring up 1 new pod before removing an old one
+      maxUnavailable: 0    # ZERO downtime — never kill a pod until new one is Ready
+
+  # ── Rollout history (how many revisions to keep for rollback) ───
+  revisionHistoryLimit: 10
+
+  template:
+    metadata:
+      labels:
+        app: rag-langchain
+        component: api
+        environment: prod
+      annotations:
+        # Prometheus scraping
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+
+    spec:
+      # ── Security Context (pod level) ────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ── Service Account ─────────────────────────────────────────
+      serviceAccountName: rag-api-sa
+
+      # ── Graceful shutdown ────────────────────────────────────────
+      # Give the pod 30s to finish in-flight requests before SIGKILL
+      terminationGracePeriodSeconds: 30
+
+      # ── Init container: wait for Qdrant to be ready ─────────────
+      initContainers:
+        - name: wait-for-qdrant
+          image: curlimages/curl:8.8.0
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://qdrant-service:6333/healthz; do
+                echo "Waiting for Qdrant..."
+                sleep 3
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+
+      # ── Main container ──────────────────────────────────────────
+      containers:
+        - name: api
+          # CI/CD replaces this tag with the immutable SHA on each deploy
+          image: registry.example.com/rag-langchain/api:latest
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          # ── Environment from ConfigMap + Secret ─────────────────
+          envFrom:
+            - configMapRef:
+                name: rag-config
+            - secretRef:
+                name: rag-secrets
+
+          # ── Resource requests/limits ─────────────────────────────
+          # Requests: what the scheduler guarantees
+          # Limits: hard cap — pod is OOMKilled if memory exceeds limit
+          resources:
+            requests:
+              cpu: "250m"       # 0.25 CPU cores guaranteed
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"      # burst up to 1 full core
+              memory: "2Gi"     # 2GB hard cap (embedding model + app)
+
+          # ── Liveness Probe ───────────────────────────────────────
+          # K8s RESTARTS the pod if this fails 3 times consecutively.
+          # Use /health — lightweight check that verifies the process is alive.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60    # wait for model to load
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          # ── Readiness Probe ──────────────────────────────────────
+          # K8s STOPS SENDING TRAFFIC if this fails.
+          # Pod stays in service only when all dependencies are reachable.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          # ── Startup Probe ────────────────────────────────────────
+          # Gives slow-starting containers (model loading) time to come up.
+          # Disables liveness check until startup succeeds.
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12       # 12 × 10s = 2 minutes max startup time
+
+          # ── Security Context (container level) ───────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # app needs to write temp files
+            capabilities:
+              drop: ["ALL"]
+
+          # ── Lifecycle hooks ──────────────────────────────────────
+          lifecycle:
+            preStop:
+              exec:
+                # Give the app 5s to finish in-flight requests before receiving SIGTERM
+                command: ["/bin/sleep", "5"]
+
+      # ── Topology spread (spread pods across nodes/zones) ─────────
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: rag-langchain
+              component: api
+
+      # ── Affinity: prefer different nodes per pod ─────────────────
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: [rag-langchain]
+                topologyKey: kubernetes.io/hostname

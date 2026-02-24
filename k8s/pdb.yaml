@@ -1,0 +1,34 @@
+# ═══════════════════════════════════════════════════════════════════
+# k8s/pdb.yaml — PodDisruptionBudget
+# ═══════════════════════════════════════════════════════════════════
+# Ensures at least 2 api pods are ALWAYS running.
+# Prevents complete outage during:
+#   - Node drains (kubectl drain node)
+#   - Rolling updates
+#   - Cluster upgrades
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rag-api-pdb
+  namespace: rag-prod
+  labels:
+    app: rag-langchain
+spec:
+  minAvailable: 2          # at least 2 pods must remain running at all times
+  selector:
+    matchLabels:
+      app: rag-langchain
+      component: api
+---
+# PDB for Qdrant StatefulSet — never disrupt all Qdrant nodes simultaneously
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qdrant-pdb
+  namespace: rag-prod
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: qdrant

@@ -1,0 +1,43 @@
+# ═══════════════════════════════════════════════════════════════════
+# k8s/namespace.yaml
+# Three isolated namespaces — one per environment.
+# Apply with: kubectl apply -f k8s/namespace.yaml
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rag-dev
+  labels:
+    environment: dev
+    app: rag-langchain
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rag-qa
+  labels:
+    environment: qa
+    app: rag-langchain
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rag-prod
+  labels:
+    environment: prod
+    app: rag-langchain
+---
+# ── Resource Quotas per namespace ────────────────────────────────────────
+# Prevent runaway resource consumption in any single environment.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: rag-quota
+  namespace: rag-prod
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    pods: "20"
