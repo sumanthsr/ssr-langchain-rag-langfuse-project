@@ -56,7 +56,7 @@ RUN python -m venv $VENV_PATH
 # Copy only dependency manifests first (layer cache optimization)
 # This layer is only invalidated when pyproject.toml changes — not on code changes
 WORKDIR /build
-COPY pyproject.toml .
+COPY pyproject.toml requirements*.txt .
 
 # Install production dependencies into the virtualenv
 # --no-deps for torch to avoid pulling CUDA packages on CPU builds
@@ -65,7 +65,7 @@ RUN pip install --upgrade pip setuptools wheel && \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         "torch>=2.3.0" \
         --no-deps && \
-    pip install -e ".[dev]" 2>/dev/null || pip install .
+    pip install -r requirements-dev.txt 2>/dev/null || pip install .
 
 
 # ── Stage 3: runtime ─────────────────────────────────────────────────────
