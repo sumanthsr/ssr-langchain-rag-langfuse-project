@@ -61,7 +61,7 @@ jobs:
           cache: pip
 
       - name: Install dev dependencies
-        run: pip install ruff mypy bandit
+        run: pip install -r requirements-dev.txt
 
       - name: Lint & Format check (ruff)
         run: ruff check . && ruff format --check .
