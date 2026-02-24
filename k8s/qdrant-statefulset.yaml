@@ -1,0 +1,174 @@
+# ═══════════════════════════════════════════════════════════════════
+# k8s/qdrant-statefulset.yaml — Qdrant Vector DB (StatefulSet)
+# ═══════════════════════════════════════════════════════════════════
+# StatefulSet (not Deployment) because:
+#   - Stable pod identities (qdrant-0, qdrant-1, qdrant-2)
+#   - Stable persistent storage (each pod owns its PVC)
+#   - Ordered startup/shutdown (safe for distributed DB consensus)
+#
+# Rollback: StatefulSets support the same rollout/rollback commands:
+#   kubectl rollout undo statefulset/qdrant -n rag-prod
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  namespace: rag-prod
+  labels:
+    app: qdrant
+    component: vector-db
+spec:
+  serviceName: qdrant-headless    # headless service for stable DNS
+  replicas: 3                     # 3-node distributed cluster in prod
+  selector:
+    matchLabels:
+      app: qdrant
+  updateStrategy:
+    type: RollingUpdate            # update one pod at a time
+    rollingUpdate:
+      partition: 0                 # update all pods (set to N to canary)
+  podManagementPolicy: OrderedReady  # safe for distributed databases
+  template:
+    metadata:
+      labels:
+        app: qdrant
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      terminationGracePeriodSeconds: 60   # allow in-flight writes to complete
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.9.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: rest
+              containerPort: 6333
+            - name: grpc
+              containerPort: 6334
+            - name: p2p
+              containerPort: 6335      # inter-node communication
+          env:
+            - name: QDRANT__CLUSTER__ENABLED
+              value: "true"
+            - name: QDRANT__CLUSTER__P2P__PORT
+              value: "6335"
+            - name: QDRANT__LOG_LEVEL
+              value: "INFO"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 6333
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 6333
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: qdrant-storage
+              mountPath: /qdrant/storage
+  # ── VolumeClaimTemplates ─────────────────────────────────────────
+  # Each pod gets its own PVC — stable, independent storage per node
+  volumeClaimTemplates:
+    - metadata:
+        name: qdrant-storage
+        labels:
+          app: qdrant
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: "fast-ssd"     # ← use your cluster's SSD StorageClass
+        resources:
+          requests:
+            storage: 50Gi
+---
+# Headless Service — required for StatefulSet stable DNS
+# Pods reachable at: qdrant-0.qdrant-headless.rag-prod.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant-headless
+  namespace: rag-prod
+  labels:
+    app: qdrant
+spec:
+  clusterIP: None          # headless — no load balancing, direct pod DNS
+  selector:
+    app: qdrant
+  ports:
+    - name: rest
+      port: 6333
+    - name: grpc
+      port: 6334
+    - name: p2p
+      port: 6335
+---
+# ── Redis StatefulSet ─────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: rag-prod
+  labels:
+    app: redis
+    component: cache
+spec:
+  serviceName: redis-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.2-alpine
+          command:
+            - redis-server
+            - --appendonly yes
+            - --maxmemory 1gb
+            - --maxmemory-policy allkeys-lru
+            - --save 60 1000
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1.5Gi"
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: "standard"
+        resources:
+          requests:
+            storage: 5Gi

@@ -1,0 +1,63 @@
+# ═══════════════════════════════════════════════════════════════════
+# k8s/hpa.yaml — HorizontalPodAutoscaler
+# ═══════════════════════════════════════════════════════════════════
+# Scales the api Deployment between 3 and 10 replicas based on:
+#   - CPU utilisation (primary trigger)
+#   - Memory utilisation (secondary trigger)
+#
+# Prerequisites: metrics-server must be installed in the cluster
+#   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rag-api-hpa
+  namespace: rag-prod
+  labels:
+    app: rag-langchain
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rag-api
+
+  minReplicas: 3       # never drop below 3 (prod HA baseline)
+  maxReplicas: 10      # never exceed 10 (cost cap)
+
+  metrics:
+    # Scale up when average CPU > 70%
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+    # Scale up when average memory > 75%
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+
+  behavior:
+    # ── Scale-up behaviour ────────────────────────────────────────
+    scaleUp:
+      stabilizationWindowSeconds: 60    # wait 60s before scaling up again
+      policies:
+        - type: Pods
+          value: 2                      # add at most 2 pods per scale-up event
+          periodSeconds: 60
+      selectPolicy: Max
+
+    # ── Scale-down behaviour ──────────────────────────────────────
+    # Conservative: wait 5 minutes before removing pods.
+    # Prevents thrashing (scale down → traffic spike → scale up immediately).
+    scaleDown:
+      stabilizationWindowSeconds: 300   # 5-minute cool-down
+      policies:
+        - type: Pods
+          value: 1                      # remove at most 1 pod per scale-down event
+          periodSeconds: 120
+      selectPolicy: Min

@@ -1,0 +1,96 @@
+# ═══════════════════════════════════════════════════════════════════
+# k8s/service.yaml — Kubernetes Services
+# ═══════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-api-service
+  namespace: rag-prod
+  labels:
+    app: rag-langchain
+    component: api
+spec:
+  type: ClusterIP          # internal only — traffic enters via Ingress
+  selector:
+    app: rag-langchain
+    component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+---
+# Qdrant Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant-service
+  namespace: rag-prod
+  labels:
+    app: rag-langchain
+    component: qdrant
+spec:
+  type: ClusterIP
+  selector:
+    app: qdrant
+  ports:
+    - name: rest
+      port: 6333
+      targetPort: 6333
+    - name: grpc
+      port: 6334
+      targetPort: 6334
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: rag-prod
+  labels:
+    app: rag-langchain
+    component: redis
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+# Ollama Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  namespace: rag-prod
+  labels:
+    app: rag-langchain
+    component: ollama
+spec:
+  type: ClusterIP
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+---
+# Langfuse Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-service
+  namespace: rag-prod
+  labels:
+    app: rag-langchain
+    component: langfuse
+spec:
+  type: ClusterIP
+  selector:
+    app: langfuse
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

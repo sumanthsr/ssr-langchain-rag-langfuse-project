@@ -1,0 +1,109 @@
+# ═══════════════════════════════════════════════════════════════════
+# k8s/configmap.yaml
+# Non-sensitive configuration. Secrets (API keys) go in secret.yaml.
+# One ConfigMap per environment — values override the .env defaults.
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Production ConfigMap ─────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+  namespace: rag-prod
+  labels:
+    app: rag-langchain
+    environment: prod
+data:
+  ENVIRONMENT: "prod"
+  DEBUG: "false"
+  LOG_LEVEL: "INFO"
+  # Qdrant — points to the K8s Service name
+  QDRANT_HOST: "qdrant-service"
+  QDRANT_PORT: "6333"
+  QDRANT_COLLECTION: "rag_documents"
+  QDRANT_PREFER_GRPC: "true"        # use gRPC in prod for lower latency
+  # Embeddings
+  EMBED_MODEL_NAME: "BAAI/bge-small-en-v1.5"
+  EMBED_DEVICE: "cpu"
+  EMBED_BATCH_SIZE: "64"
+  # Chunking
+  CHUNK_SIZE: "1000"
+  CHUNK_OVERLAP: "200"
+  # Retrieval
+  RETRIEVAL_TOP_K: "20"
+  RETRIEVAL_FINAL_K: "4"
+  RERANKER_ENABLED: "true"
+  RERANKER_MODEL_NAME: "BAAI/bge-reranker-base"
+  # Ollama
+  OLLAMA_BASE_URL: "http://ollama-service:11434"
+  OLLAMA_MODEL: "llama3"
+  OLLAMA_TEMPERATURE: "0.0"
+  OLLAMA_TIMEOUT: "90"
+  # Redis
+  REDIS_URL: "redis://redis-service:6379/0"
+  CACHE_ENABLED: "true"
+  REDIS_CACHE_TTL: "3600"
+  # Langfuse
+  LANGFUSE_ENABLED: "true"
+  LANGFUSE_HOST: "http://langfuse-service:3000"
+  # Limits
+  MAX_UPLOAD_SIZE_MB: "50"
+---
+# ── QA ConfigMap ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+  namespace: rag-qa
+  labels:
+    app: rag-langchain
+    environment: qa
+data:
+  ENVIRONMENT: "qa"
+  DEBUG: "false"
+  LOG_LEVEL: "INFO"
+  QDRANT_HOST: "qdrant-service"
+  QDRANT_PORT: "6333"
+  QDRANT_COLLECTION: "rag_documents"
+  EMBED_MODEL_NAME: "BAAI/bge-small-en-v1.5"
+  EMBED_DEVICE: "cpu"
+  CHUNK_SIZE: "1000"
+  CHUNK_OVERLAP: "200"
+  RETRIEVAL_TOP_K: "20"
+  RETRIEVAL_FINAL_K: "4"
+  RERANKER_ENABLED: "true"
+  OLLAMA_BASE_URL: "http://ollama-service:11434"
+  OLLAMA_MODEL: "llama3"
+  REDIS_URL: "redis://redis-service:6379/0"
+  CACHE_ENABLED: "true"
+  LANGFUSE_ENABLED: "true"
+  LANGFUSE_HOST: "http://langfuse-service:3000"
+---
+# ── Dev ConfigMap ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+  namespace: rag-dev
+  labels:
+    app: rag-langchain
+    environment: dev
+data:
+  ENVIRONMENT: "dev"
+  DEBUG: "true"
+  LOG_LEVEL: "DEBUG"
+  QDRANT_HOST: "qdrant-service"
+  QDRANT_PORT: "6333"
+  QDRANT_COLLECTION: "rag_documents_dev"
+  EMBED_MODEL_NAME: "BAAI/bge-small-en-v1.5"
+  EMBED_DEVICE: "cpu"
+  CHUNK_SIZE: "1000"
+  CHUNK_OVERLAP: "200"
+  RETRIEVAL_TOP_K: "10"
+  RETRIEVAL_FINAL_K: "4"
+  RERANKER_ENABLED: "false"         # disabled in dev for speed
+  OLLAMA_BASE_URL: "http://ollama-service:11434"
+  OLLAMA_MODEL: "llama3"
+  REDIS_URL: "redis://redis-service:6379/0"
+  CACHE_ENABLED: "false"
+  LANGFUSE_ENABLED: "false"         # disabled in dev

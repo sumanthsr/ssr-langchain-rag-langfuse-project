@@ -1,0 +1,197 @@
+# ═══════════════════════════════════════════════════════════════════
+# docker-compose.yml — Local Development Stack
+# ═══════════════════════════════════════════════════════════════════
+#
+# Services:
+#   api        — FastAPI RAG service (hot-reload enabled)
+#   qdrant     — Vector database
+#   ollama     — Local LLM server
+#   redis      — Response cache
+#   langfuse   — LLM observability (self-hosted, open-source)
+#   langfuse-db— PostgreSQL for Langfuse
+#
+# Usage:
+#   docker compose up -d               # start all services
+#   docker compose up api              # start just the API (services auto-started)
+#   docker compose logs -f api         # follow API logs
+#   docker compose down -v             # stop and remove volumes
+#
+# After starting:
+#   API:          http://localhost:8000/docs
+#   Langfuse UI:  http://localhost:3000  (create account on first visit)
+#   Qdrant UI:    http://localhost:6333/dashboard
+# ═══════════════════════════════════════════════════════════════════
+
+name: rag-langchain
+
+services:
+
+  # ── FastAPI RAG Application ──────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime           # use runtime stage (not builder)
+    image: rag-langchain/api:dev
+    container_name: rag-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override specific values for local dev
+      ENVIRONMENT: dev
+      LOG_LEVEL: DEBUG
+      DEBUG: "true"
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      OLLAMA_BASE_URL: http://ollama:11434
+      REDIS_URL: redis://redis:6379/0
+      LANGFUSE_HOST: http://langfuse:3000
+    volumes:
+      # Hot-reload: mount source code for live development
+      - ./app:/app/app:ro
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ── Qdrant Vector Database ───────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.9.2
+    container_name: rag-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"       # REST API + dashboard
+      - "6334:6334"       # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__LOG_LEVEL: INFO
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Ollama Local LLM Server ──────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    # GPU support: uncomment the deploy section if you have NVIDIA GPU + nvidia-container-toolkit
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    networks:
+      - rag-net
+    # Pull the model on startup (runs once; subsequent starts skip if model exists)
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        sleep 5
+        ollama pull llama3 &&
+        ollama pull nomic-embed-text &&
+        wait
+
+  # ── Redis Cache ──────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: rag-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Langfuse (LLM Observability — Self-Hosted) ───────────────────
+  langfuse:
+    image: ghcr.io/langfuse/langfuse:latest
+    container_name: rag-langfuse
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      NEXTAUTH_SECRET: dev-secret-change-in-production
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: dev-salt-change-in-production
+      TELEMETRY_ENABLED: "false"         # disable usage telemetry
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    networks:
+      - rag-net
+
+  # ── PostgreSQL for Langfuse ──────────────────────────────────────
+  langfuse-db:
+    image: postgres:16-alpine
+    container_name: rag-langfuse-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-db-data:/var/lib/postgresql/data
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+# ── Volumes ──────────────────────────────────────────────────────────────
+volumes:
+  qdrant-data:
+    driver: local
+  ollama-models:
+    driver: local
+  redis-data:
+    driver: local
+  langfuse-db-data:
+    driver: local
+
+
+# ── Networks ─────────────────────────────────────────────────────────────
+networks:
+  rag-net:
+    driver: bridge
+    name: rag-langchain-network
