@@ -49,3 +49,6 @@ tenacity>=8.3.0
 
 # Caching
 redis>=5.0.4
+
+# Logging - ADDED
+structlog>=24.1.0
