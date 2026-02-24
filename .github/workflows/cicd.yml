@@ -89,7 +89,9 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: | 
+          pip install --upgrade pip setuptools wheel
+          pip install -r requirements-dev.txt
 
       - name: Run unit tests
         run: |
@@ -257,7 +259,7 @@ jobs:
           cache: pip
 
       - name: Install test dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -r requirements-dev.txt
 
       - name: Run integration tests against QA
         run: |
