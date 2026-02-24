@@ -1,0 +1,51 @@
+# RAG LangChain - Langfuse Version
+# Production dependencies
+
+# API framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# LangChain core
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-huggingface>=0.0.3
+langchain-core>=0.2.0
+
+# PDF loading
+pypdf>=4.2.0
+pdfminer.six>=20221105
+pymupdf>=1.24.0
+unstructured>=0.14.0
+
+# Embeddings (open-source, local)
+sentence-transformers>=3.0.0
+torch>=2.3.0
+
+# Vector store
+qdrant-client>=1.9.0
+langchain-qdrant>=0.1.0
+
+# Hybrid retrieval
+rank-bm25>=0.2.2
+
+# Reranking
+FlagEmbedding>=1.2.0
+
+# LLM (local via Ollama HTTP)
+ollama>=0.2.0
+
+# Observability - Langfuse (open-source)
+langfuse>=2.30.0
+
+# Configuration & validation
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# Async HTTP / utilities
+httpx>=0.27.0
+aiofiles>=23.2.1
+tenacity>=8.3.0
+
+# Caching
+redis>=5.0.4
