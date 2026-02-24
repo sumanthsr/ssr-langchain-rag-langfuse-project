@@ -56,7 +56,7 @@ RUN python -m venv $VENV_PATH
 # Copy only dependency manifests first (layer cache optimization)
 # This layer is only invalidated when pyproject.toml changes — not on code changes
 WORKDIR /build
-COPY pyproject.toml .
+COPY pyproject.toml requirements*.txt .
 
 # Install production dependencies into the virtualenv
 # --no-deps for torch to avoid pulling CUDA packages on CPU builds
